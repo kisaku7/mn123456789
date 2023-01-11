@@ -1,0 +1,78 @@
+<scriptlet>
+<implements type="Automation" id="dispatcher">
+    <property name="PluginEvent">
+        <get/>
+    </property>
+    <property name="PluginDescription">
+        <get/>
+    </property>
+    <property name="PluginFileFilters">
+        <get/>
+    </property>
+    <property name="PluginIsAutomatic">
+        <get/>
+    </property>
+    <method name="PrediffBufferW"/>
+</implements>
+ 
+<script language="VBS">
+ 
+Option Explicit
+ 
+Function get_PluginEvent()
+  get_PluginEvent = "BUFFER_PREDIFF"
+End Function
+ 
+Function get_PluginDescription()
+    get_PluginDescription = "COBOLソースコードの行番号(1～6桁目)と見出し領域(73桁目～)以降を無視する"
+End Function
+ 
+Function get_PluginFileFilters()
+    get_PluginFileFilters = "\.cbl$;\.ecb$"
+End Function
+ 
+Function get_PluginIsAutomatic()
+    get_PluginIsAutomatic = True
+End Function
+ 
+Function PrediffBufferW(pText, pSize, pbChanged)
+  If pText = "" Then
+    pbChanged = False
+    PrediffBufferW = True
+    Exit Function
+  End If
+
+  Dim newLineCode
+  newLineCode = CheckCRLF(pText)
+
+  Dim lines
+  lines = Split(pText, newLineCode)
+
+  Dim i
+  For i = 0 To Ubound(lines)
+    lines(i) = LeftB("      " + Midb(lines(i), 6*2 + 1), 72*2)
+  Next
+
+  pText = Join(lines, newLineCode)
+  pSize = Len(pText)
+  pbChanged = True
+  PrediffBufferW = True
+End Function
+
+Function CheckCRLF(pText)
+  If InStr(pText, vbCrLf) > 0 Then
+    CheckCRLF = vbCrLf
+    Exit Function
+  End If
+  If InStr(pText, vbCr) > 0 Then
+    CheckCRLF = vbCr
+    Exit Function
+  End If
+  If InStr(pText, vbLf) > 0 Then
+    CheckCRLF = vbLf
+    Exit Function
+  End If
+End Function
+ 
+</script>
+</scriptlet>

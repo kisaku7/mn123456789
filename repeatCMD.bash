@@ -1,0 +1,1 @@
+cmd='date'; target='13:30:00'; while true; do sleep 1; ret=`eval ${cmd}`; echo [`date +'%Y/%m/%d %T'`]${ret}; echo ${ret} | grep ${target} > /dev/null ; if [ $? -eq 0 ]; then break; fi; done; echo '[END]'

@@ -1,0 +1,61 @@
+Sub SetPageNumbersToDK2()
+
+    Dim ws As Worksheet
+    Dim sheetNames As Object
+    Dim baseName As Variant  ' ← 修正: baseName を Variant に変更
+    Dim sheetGroup As Collection
+    Dim i As Long, totalPages As Long
+    Dim regex As Object
+
+    ' --- 正規表現オブジェクトを作成 ---
+    Set regex = CreateObject("VBScript.RegExp")
+    With regex
+        .Pattern = "^\d+\s*\(\d+\)$|^\d+$"  ' 数値のみ または 数値 + 任意の空白 + (数値)
+        .IgnoreCase = True
+        .Global = False
+    End With
+
+    ' --- シートグループ用の辞書を作成 ---
+    Set sheetNames = CreateObject("Scripting.Dictionary")
+
+    ' --- すべてのシートをループ ---
+    For Each ws In ThisWorkbook.Worksheets
+
+        ' 対象シートのみ処理
+        If regex.Test(ws.Name) Then
+
+            ' 括弧以降を削除してベース名取得 (例: "1 (2)" → "1", "1(2)" → "1")
+            If InStr(ws.Name, "(") > 0 Then
+                baseName = Trim(Left(ws.Name, InStr(ws.Name, "(") - 1))
+            Else
+                baseName = ws.Name
+            End If
+
+            ' 辞書にベース名がない場合は新規追加
+            If Not sheetNames.Exists(baseName) Then
+                Set sheetGroup = New Collection
+                sheetNames.Add baseName, sheetGroup
+            End If
+
+            ' シートを該当グループに追加
+            sheetNames(baseName).Add ws
+
+        End If
+    Next ws
+
+    ' --- グループごとにページ番号を振り分け ---
+    For Each baseName In sheetNames.Keys  ' ← 修正: baseName は Variant
+        Set sheetGroup = sheetNames(baseName)
+        totalPages = sheetGroup.Count
+
+        i = 1
+        For Each ws In sheetGroup
+            ws.Range("DK2").Value = "'" & i & "/" & totalPages
+            i = i + 1
+        Next ws
+    Next baseName
+
+    MsgBox "対象シートにページ番号を振り終えました。", vbInformation
+
+End Sub
+

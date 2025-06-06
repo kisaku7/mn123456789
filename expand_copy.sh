@@ -36,17 +36,10 @@ fi
 > "$output_file"
 echo "ファイル展開開始: $output_file"
 
-# 対象ファイル抽出（指定された -copy パスに限定）
-copy_candidates=()
+# デフォルト探索パス
 if [ ${#copy_paths[@]} -eq 0 ]; then
     copy_paths=(".")
 fi
-
-for path in "${copy_paths[@]}"; do
-    for file in $(find $path -type f 2>/dev/null); do
-        copy_candidates+=("$file")
-    done
-done
 
 normalize() {
     echo "$1" | tr '[:upper:]' '[:lower:]'
@@ -54,27 +47,26 @@ normalize() {
 
 declare -A expanded_files
 
-# COPY/INCLUDEファイルのマッチ候補を限定的に探す
+# 都度 find でマッチファイルを絞り込む（高速）
 find_file_match() {
     local base="$1"
     local matchtype="$2"  # "copy" or "include"
-    local -a targets=()
     local -a matches=()
+    local -a patterns=()
 
     if [ "$matchtype" = "copy" ]; then
         for ext in cbl cob copy; do
-            targets+=("$(normalize "${base}.${ext}")")
+            patterns+=("${base}.${ext}")
         done
     else
-        targets+=("$(normalize "$base")")
+        patterns+=("$base")
     fi
 
-    for candidate in "${copy_candidates[@]}"; do
-        lc_name=$(normalize "$(basename "$candidate")")
-        for tgt in "${targets[@]}"; do
-            if [[ "$lc_name" == "$tgt" ]]; then
-                matches+=("$candidate")
-            fi
+    for dir in "${copy_paths[@]}"; do
+        for pattern in "${patterns[@]}"; do
+            while IFS= read -r f; do
+                matches+=("$f")
+            done < <(find $dir -type f -iname "$pattern" 2>/dev/null)
         done
     done
 
@@ -93,6 +85,7 @@ find_file_match() {
     return 0
 }
 
+# ファイル内容を展開（再帰対応）
 expand_file() {
     local file="$1"
     local norm=$(normalize "$file")
@@ -120,7 +113,7 @@ expand_file() {
             find_file_match "$name" "copy"
             echo "      *>* End: $name" >> "$output_file"
 
-        # EXEC SQL INCLUDE
+        # EXEC SQL INCLUDE 句
         elif [[ "$body" =~ ^[[:space:]]*EXEC[[:space:]]+SQL[[:space:]]+INCLUDE[[:space:]]+([A-Za-z0-9._-]+)[[:space:]]*\.?[[:space:]]*END-EXEC ]]; then
             fullfile="${BASH_REMATCH[1]}"
             echo "      *>* Start: $fullfile" >> "$output_file"
@@ -133,7 +126,7 @@ expand_file() {
     echo "      *>* End: $file" >> "$output_file"
 }
 
-# メイン開始
+# 展開開始
 expand_file "$input_file"
 
 echo "ファイル展開完了: $output_file"

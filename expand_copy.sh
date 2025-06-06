@@ -1,4 +1,30 @@
-#!/bin/bash
+while IFS= read -r line; do
+    echo "$line" >> "$output_file"
+
+    # コメント行はスキップ（7桁目が *）
+    if [[ "${line:6:1}" == "*" ]]; then
+        continue
+    fi
+
+    # 7桁目～72桁目だけを取り出して解析
+    body="${line:6:66}"  # index=6 (7桁目), length=66 → 72桁目まで
+
+    # COPY句検出（末尾ピリオドあり/なし両方対応）
+    if [[ "$body" =~ ^[[:space:]]*COPY[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]*\.?[[:space:]]*$ ]]; then
+        name="${BASH_REMATCH[1]}"
+        echo "      *> --- Start of ${name} ---" >> "$output_file"
+        search_copy_file "$name"
+        echo "      *> --- End of ${name} ---" >> "$output_file"
+
+    # EXEC SQL INCLUDE句検出
+    elif [[ "$body" =~ ^[[:space:]]*EXEC[[:space:]]+SQL[[:space:]]+INCLUDE[[:space:]]+([A-Za-z0-9._-]+)[[:space:]]*\.?[[:space:]]*END-EXEC ]]; then
+        fullfile="${BASH_REMATCH[1]}"
+        echo "      *> --- Start of ${fullfile} ---" >> "$output_file"
+        search_include_file "$fullfile"
+        echo "      *> --- End of ${fullfile} ---" >> "$output_file"
+    fi
+
+done < "$input_file"#!/bin/bash
 
 # 初期化
 copy_paths=()

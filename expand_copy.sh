@@ -57,14 +57,14 @@ apply_replace() {
 
 parse_replacing_clause() {
     local clause="$1"
-    declare -A tmp_map
+    local -n _map="$2"
+
     while [[ "$clause" =~ ==([^=]+)==[[:space:]]+BY[[:space:]]+==([^=]+)== ]]; do
         key="${BASH_REMATCH[1]}"
         val="${BASH_REMATCH[2]}"
-        tmp_map["$key"]="$val"
+        _map["$key"]="$val"
         clause="${clause#*==${key}== BY ==${val}==}"
     done
-    echo "$(declare -p tmp_map)"
 }
 
 find_file_match() {
@@ -136,7 +136,7 @@ expand_file() {
             continue
         fi
 
-        # グローバル REPLACE ==A== BY ==B==.
+        # グローバル REPLACE
         if [[ "$body" =~ ^[[:space:]]*REPLACE[[:space:]]+==([^=]+)==[[:space:]]+BY[[:space:]]+==([^=]+)==\. ]]; then
             global_replace_map["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
             replace_active=true
@@ -144,55 +144,46 @@ expand_file() {
             continue
         fi
 
-        # 直前が COPY xxx のとき、REPLACING行が続く場合の処理
+        # COPY 直後に REPLACING 行が続くケースに備えて保持
         if [[ "$previous_copy" != "" ]]; then
             if [[ "$body" =~ REPLACING ]]; then
-                eval "$(parse_replacing_clause "$body")"
-                eval "local_replace_map=\${tmp_map[@]}"
-                in_copy_replacing=true
+                declare -A local_replace_map
+                parse_replacing_clause "$body" local_replace_map
+                expand_file_with_replace "$previous_copy" local_replace_map
+                echo "      *** $previous_copy : END" >> "$output_file"
+                previous_copy=""
                 continue
             fi
         fi
 
         previous_copy=""
-        in_copy_replacing=false
-        local_replace_map=()
-
-        # グローバル REPLACE 適用
-        if $replace_active; then
-            line=$(apply_replace "$line" global_replace_map)
-        fi
-
+        line=$(apply_replace "$line" global_replace_map)
         echo "$line" >> "$output_file"
-
         body="${line:6:66}"
 
-        # COPY句 with REPLACING
+        # COPY with inline REPLACING
         if [[ "$body" =~ ^[[:space:]]*COPY[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]+REPLACING[[:space:]]+(.*)\.$ ]]; then
             name="${BASH_REMATCH[1]}"
             clause="${BASH_REMATCH[2]}"
-            eval "$(parse_replacing_clause "$clause")"
+            declare -A local_replace_map
+            parse_replacing_clause "$clause" local_replace_map
             echo "      *** $name : START" >> "$output_file"
-            eval "expand_file_with_replace \"$name\" local_replace_map"
+            expand_file_with_replace "$name" local_replace_map
             echo "      *** $name : END" >> "$output_file"
             continue
         fi
 
-        # COPY句 only
+        # COPY only
         if [[ "$body" =~ ^[[:space:]]*COPY[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]*\.?[[:space:]]*$ ]]; then
             name="${BASH_REMATCH[1]}"
             previous_copy="$name"
             echo "      *** $name : START" >> "$output_file"
-            if $in_copy_replacing; then
-                expand_file_with_replace "$name" local_replace_map
-            else
-                find_file_match "$name" "copy"
-            fi
+            find_file_match "$name" "copy"
             echo "      *** $name : END" >> "$output_file"
             continue
         fi
 
-        # EXEC SQL INCLUDE
+        # INCLUDE
         if [[ "$body" =~ ^[[:space:]]*EXEC[[:space:]]+SQL[[:space:]]+INCLUDE[[:space:]]+([A-Za-z0-9._-]+)[[:space:]]*\.?[[:space:]]*END-EXEC ]]; then
             fullfile="${BASH_REMATCH[1]}"
             echo "      *** $fullfile : START" >> "$output_file"
@@ -207,7 +198,7 @@ expand_file() {
 
 expand_file_with_replace() {
     local name="$1"
-    local -n _repl_map=$2
+    local -n _map="$2"
 
     local -a matches=()
     for dir in "${copy_paths[@]}"; do
@@ -235,7 +226,7 @@ expand_file_with_replace() {
         if [[ "${line:6:1}" == "*" ]]; then
             echo "$line" >> "$output_file"
         else
-            echo "$(apply_replace "$line" _repl_map)" >> "$output_file"
+            echo "$(apply_replace "$line" _map)" >> "$output_file"
         fi
     done < "$file"
 }

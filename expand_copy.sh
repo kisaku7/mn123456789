@@ -3,7 +3,6 @@
 copy_paths=()
 positional_args=()
 
-# 引数解析
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -copy)
@@ -58,12 +57,14 @@ apply_replace() {
 parse_replacing_clause() {
     local clause="$1"
     local -n _map="$2"
-
-    while [[ "$clause" =~ ==([^=]+)==[[:space:]]+BY[[:space:]]+==([^=]+)== ]]; do
-        key="${BASH_REMATCH[1]}"
-        val="${BASH_REMATCH[2]}"
-        _map["$key"]="$val"
-        clause="${clause#*==${key}== BY ==${val}==}"
+    while [[ "$clause" =~ (==[^=]+==[[:space:]]+BY[[:space:]]+==[^=]+==) ]]; do
+        full="${BASH_REMATCH[1]}"
+        if [[ "$full" =~ ==([^=]+)==[[:space:]]+BY[[:space:]]+==([^=]+)== ]]; then
+            key="${BASH_REMATCH[1]}"
+            val="${BASH_REMATCH[2]}"
+            _map["$key"]="$val"
+        fi
+        clause="${clause#*$full}"
     done
 }
 
@@ -85,19 +86,13 @@ find_file_match() {
         for pattern in "${patterns[@]}"; do
             while IFS= read -r f; do
                 matches+=("$f")
-            done < <(find $dir -type f -iname "$pattern" 2>/dev/null)
+            done < <(find "$dir" -type f -iname "$pattern" 2>/dev/null)
         done
     done
 
     if [ ${#matches[@]} -eq 0 ]; then
         echo "      *** $base : NOTFOUND" | tee -a "$output_file"
         return 1
-    elif [ ${#matches[@]} -gt 1 ]; then
-        echo "      *** $base : MULTIPLE" | tee -a "$output_file"
-        for f in "${matches[@]}"; do
-            echo "      *      $f" | tee -a "$output_file"
-        done
-        echo "      *      using first: ${matches[0]}" | tee -a "$output_file"
     fi
 
     expand_file "${matches[0]}"
@@ -144,7 +139,7 @@ expand_file() {
             continue
         fi
 
-        # COPY 直後に REPLACING 行が続くケースに備えて保持
+        # COPY の直後に REPLACING 行が続くパターン
         if [[ "$previous_copy" != "" ]]; then
             if [[ "$body" =~ REPLACING ]]; then
                 declare -A local_replace_map
@@ -157,7 +152,10 @@ expand_file() {
         fi
 
         previous_copy=""
-        line=$(apply_replace "$line" global_replace_map)
+        if $replace_active; then
+            line=$(apply_replace "$line" global_replace_map)
+        fi
+
         echo "$line" >> "$output_file"
         body="${line:6:66}"
 
@@ -206,7 +204,7 @@ expand_file_with_replace() {
             pattern="${name}.${ext}"
             while IFS= read -r f; do
                 matches+=("$f")
-            done < <(find $dir -type f -iname "$pattern" 2>/dev/null)
+            done < <(find "$dir" -type f -iname "$pattern" 2>/dev/null)
         done
     done
 

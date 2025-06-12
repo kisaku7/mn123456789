@@ -111,14 +111,10 @@ expand_file() {
 
     local previous_copy=""
     declare -A local_replace_map
-    local in_copy_replacing=false
 
     while IFS= read -r line; do
-        raw_line="$line"
-
         if [[ "${line:6:1}" == "*" || ${#line} -lt 7 ]]; then
-            echo "$line" >> "$output_file"
-            continue
+            continue  # コメント行スキップ
         fi
 
         body="${line:6:66}"
@@ -127,7 +123,6 @@ expand_file() {
         if [[ "$body" =~ ^[[:space:]]*REPLACE[[:space:]]+OFF ]]; then
             global_replace_map=()
             replace_active=false
-            echo "$line" >> "$output_file"
             continue
         fi
 
@@ -135,11 +130,10 @@ expand_file() {
         if [[ "$body" =~ ^[[:space:]]*REPLACE[[:space:]]+==([^=]+)==[[:space:]]+BY[[:space:]]+==([^=]+)==\. ]]; then
             global_replace_map["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
             replace_active=true
-            echo "$line" >> "$output_file"
             continue
         fi
 
-        # COPY の直後に REPLACING 行が続くパターン
+        # COPYの次行にREPLACING
         if [[ "$previous_copy" != "" ]]; then
             if [[ "$body" =~ REPLACING ]]; then
                 declare -A local_replace_map
@@ -152,12 +146,6 @@ expand_file() {
         fi
 
         previous_copy=""
-        if $replace_active; then
-            line=$(apply_replace "$line" global_replace_map)
-        fi
-
-        echo "$line" >> "$output_file"
-        body="${line:6:66}"
 
         # COPY with inline REPLACING
         if [[ "$body" =~ ^[[:space:]]*COPY[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]+REPLACING[[:space:]]+(.*)\.$ ]]; then
@@ -171,7 +159,7 @@ expand_file() {
             continue
         fi
 
-        # COPY only
+        # COPYのみ
         if [[ "$body" =~ ^[[:space:]]*COPY[[:space:]]+([A-Za-z0-9_-]+)[[:space:]]*\.?[[:space:]]*$ ]]; then
             name="${BASH_REMATCH[1]}"
             previous_copy="$name"
@@ -220,13 +208,16 @@ expand_file_with_replace() {
     fi
     expanded_files[$norm]=1
 
+    echo "      *** $file : START" >> "$output_file"
+
     while IFS= read -r line; do
-        if [[ "${line:6:1}" == "*" ]]; then
-            echo "$line" >> "$output_file"
-        else
-            echo "$(apply_replace "$line" _map)" >> "$output_file"
+        if [[ "${line:6:1}" == "*" || ${#line} -lt 7 ]]; then
+            continue
         fi
+        echo "$(apply_replace "$line" _map)" >> "$output_file"
     done < "$file"
+
+    echo "      *** $file : END" >> "$output_file"
 }
 
 expand_file "$input_file"

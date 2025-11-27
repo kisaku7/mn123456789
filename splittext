@@ -1,0 +1,218 @@
+Option Explicit
+
+
+Sub SplitTextByMarkers()
+
+    Dim inputPath As String
+    Dim outputFolder As String
+    Dim fnum As Integer
+    Dim lineText As String
+    Dim inBlock As Boolean
+    Dim currentName As String
+    Dim buffer As String
+    Dim endName As String
+    
+    ' 入力ファイル選択
+    inputPath = SelectInputFile()
+    If inputPath = "" Then Exit Sub
+    
+    ' 出力フォルダ選択
+    outputFolder = SelectOutputFolder()
+    If outputFolder = "" Then Exit Sub
+    
+    If Right$(outputFolder, 1) <> "\" Then
+        outputFolder = outputFolder & "\"
+    End If
+    
+    fnum = FreeFile
+    Open inputPath For Input As #fnum
+    
+    inBlock = False
+    currentName = ""
+    buffer = ""
+    
+    Do While Not EOF(fnum)
+        Line Input #fnum, lineText
+        
+        If Not inBlock Then
+            
+            If IsStartMarker(lineText, currentName) Then
+                inBlock = True
+                buffer = ""
+            End If
+            
+        Else
+            
+            If IsEndMarker(lineText, endName) Then
+                
+                If endName = currentName Then
+                    SaveBlockToFile outputFolder, currentName, buffer
+                Else
+                    ' 開始名と終了名が違う場合は、とりあえず終了とみなして保存しない
+                End If
+                
+                inBlock = False
+                currentName = ""
+                buffer = ""
+                
+            Else
+                buffer = buffer & lineText & vbCrLf
+            End If
+            
+        End If
+        
+    Loop
+    
+    Close #fnum
+    
+    MsgBox "処理が完了しました。", vbInformation
+
+End Sub
+
+
+
+Function SelectInputFile() As String
+
+    Dim fd As FileDialog
+    Dim result As String
+    
+    result = ""
+    
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = "入力テキストファイルを選択してください"
+        .AllowMultiSelect = False
+        .Filters.Clear
+        .Filters.Add "テキストファイル", "*.txt;*.log;*.*"
+        If .Show = -1 Then
+            result = .SelectedItems(1)
+        End If
+    End With
+    
+    SelectInputFile = result
+
+End Function
+
+
+
+Function SelectOutputFolder() As String
+
+    Dim fd As FileDialog
+    Dim result As String
+    
+    result = ""
+    
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    With fd
+        .Title = "出力フォルダを選択してください"
+        If .Show = -1 Then
+            result = .SelectedItems(1)
+        End If
+    End With
+    
+    SelectOutputFolder = result
+
+End Function
+
+
+
+Function IsStartMarker(ByVal lineText As String, ByRef fileName As String) As Boolean
+
+    Dim p1 As Long
+    Dim p2 As Long
+    Dim namePart As String
+    
+    IsStartMarker = False
+    fileName = ""
+    
+    p1 = InStr(lineText, "▼▼▼")
+    If p1 = 0 Then Exit Function
+    
+    p1 = p1 + Len("▼▼▼")
+    p2 = InStr(p1, lineText, "▼▼▼")
+    If p2 = 0 Then Exit Function
+    
+    namePart = Mid$(lineText, p1, p2 - p1)
+    namePart = Trim$(namePart)
+    namePart = Replace(namePart, "[", "")
+    namePart = Replace(namePart, "]", "")
+    
+    If namePart <> "" Then
+        fileName = namePart
+        IsStartMarker = True
+    End If
+
+End Function
+
+
+
+Function IsEndMarker(ByVal lineText As String, ByRef fileName As String) As Boolean
+
+    Dim p1 As Long
+    Dim p2 As Long
+    Dim namePart As String
+    
+    IsEndMarker = False
+    fileName = ""
+    
+    p1 = InStr(lineText, "▲▲▲")
+    If p1 = 0 Then Exit Function
+    
+    p1 = p1 + Len("▲▲▲")
+    p2 = InStr(p1, lineText, "▲▲▲")
+    If p2 = 0 Then Exit Function
+    
+    namePart = Mid$(lineText, p1, p2 - p1)
+    namePart = Trim$(namePart)
+    namePart = Replace(namePart, "[", "")
+    namePart = Replace(namePart, "]", "")
+    
+    If namePart <> "" Then
+        fileName = namePart
+        IsEndMarker = True
+    End If
+
+End Function
+
+
+
+Sub SaveBlockToFile(ByVal outputFolder As String, ByVal rawName As String, ByVal content As String)
+
+    Dim fileName As String
+    Dim fullPath As String
+    Dim fnum As Integer
+    
+    fileName = SanitizeFileName(rawName)
+    If fileName = "" Then Exit Sub
+    
+    fullPath = outputFolder & fileName & ".txt"
+    
+    fnum = FreeFile
+    Open fullPath For Output As #fnum
+    Print #fnum, content;
+    Close #fnum
+
+End Sub
+
+
+
+Function SanitizeFileName(ByVal s As String) As String
+
+    Dim r As String
+    
+    r = s
+    r = Replace(r, "\", "_")
+    r = Replace(r, "/", "_")
+    r = Replace(r, ":", "_")
+    r = Replace(r, "*", "_")
+    r = Replace(r, "?", "_")
+    r = Replace(r, """", "_")
+    r = Replace(r, "<", "_")
+    r = Replace(r, ">", "_")
+    r = Replace(r, "|", "_")
+    
+    r = Trim$(r)
+    
+    SanitizeFileName = r
+
+End Function

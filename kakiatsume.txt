@@ -1,0 +1,47 @@
+Option Explicit
+
+
+
+Sub 抽出_指定行以降_新シート()
+Dim fp As Variant, wbS As Workbook, wsS As Worksheet
+Dim wsN As Worksheet, f As String, r0 As Long
+Dim lr As Long, lc As Long, n As Long
+Dim v, out()
+
+fp = Application.GetOpenFilename("Excel (*.xlsx;*.xlsm;*.xls),*.xlsx;*.xlsm;*.xls", , "Excel選択")
+If fp = False Then Exit Sub
+
+r0 = CLng(Application.InputBox("何行目以降？", "開始行", 2, Type:=1))
+If r0 < 1 Then Exit Sub
+
+Application.ScreenUpdating = False
+
+Set wbS = Workbooks.Open(CStr(fp), ReadOnly:=True)
+Set wsS = wbS.ActiveSheet
+
+lr = wsS.UsedRange.Row + wsS.UsedRange.Rows.Count - 1
+lc = wsS.UsedRange.Column + wsS.UsedRange.Columns.Count - 1
+If lr < r0 Or lc < 1 Then GoTo Fin
+
+Set wsN = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Sheets(ThisWorkbook.Sheets.Count))
+wsN.Name = "抽出_" & Format(Now, "hhmmss")
+
+v = wsS.Range(wsS.Cells(r0, 1), wsS.Cells(lr, lc)).Value
+n = UBound(v, 1)
+ReDim out(1 To n, 1 To UBound(v, 2) + 1)
+
+f = wbS.Name
+Dim i As Long, j As Long
+For i = 1 To n
+    out(i, 1) = f
+    For j = 1 To UBound(v, 2)
+        out(i, j + 1) = v(i, j)
+    Next
+Next
+
+wsN.Range("A1").Resize(n, UBound(out, 2)).Value = out
+
+Fin:
+wbS.Close SaveChanges:=False
+Application.ScreenUpdating = True
+End Sub

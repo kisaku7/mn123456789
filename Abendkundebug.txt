@@ -1,0 +1,203 @@
+const TARGET_PAGE_URL_PREFIX = "https://example.com/target";
+
+const TARGET_TS_FILE_REGEX = ".*TicketPage\\.ts$";
+
+const TARGET_LINE_1_BASED = 88;
+
+const BREAKPOINT_LINE_0_BASED = TARGET_LINE_1_BASED - 1;
+
+const ERROR_MESSAGE = "Injected error before target line";
+
+const attachedTabs = new Set();
+const breakpointSetTabs = new Set();
+const thrownTabs = new Set();
+
+
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  console.log("[onUpdated]", {
+    tabId,
+    status: changeInfo.status,
+    url: tab.url,
+    targetPrefix: TARGET_PAGE_URL_PREFIX,
+    urlMatched: !!tab.url && tab.url.startsWith(TARGET_PAGE_URL_PREFIX)
+  });
+
+  if (changeInfo.status !== "complete") {
+    return;
+  }
+
+  if (!tab.url || !tab.url.startsWith(TARGET_PAGE_URL_PREFIX)) {
+    console.log("[skip] url not matched", {
+      currentUrl: tab.url,
+      targetPrefix: TARGET_PAGE_URL_PREFIX
+    });
+    return;
+  }
+
+  console.log("[matched] target page detected", tab.url);
+
+  attachAndSetErrorBreakpoint(tabId);
+});
+
+
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  attachedTabs.delete(tabId);
+  breakpointSetTabs.delete(tabId);
+  thrownTabs.delete(tabId);
+});
+
+
+
+chrome.debugger.onDetach.addListener((source) => {
+  console.log("[debugger detached]", source);
+
+  if (!source.tabId) {
+    return;
+  }
+
+  attachedTabs.delete(source.tabId);
+  breakpointSetTabs.delete(source.tabId);
+  thrownTabs.delete(source.tabId);
+});
+
+
+
+chrome.debugger.onEvent.addListener(async (source, method, params) => {
+  console.log("[debugger event]", {
+    tabId: source.tabId,
+    method,
+    params
+  });
+
+  if (method === "Debugger.scriptParsed") {
+    const url = params.url || "";
+
+    if (url.includes(".ts") || url.includes(".js") || url.includes("webpack")) {
+      console.log("[scriptParsed]", {
+        url,
+        lineCount: params.endLine,
+        sourceMapURL: params.sourceMapURL
+      });
+    }
+
+    return;
+  }
+
+  if (method !== "Debugger.paused") {
+    return;
+  }
+
+  await onPaused(source, params);
+});
+
+
+
+async function attachAndSetErrorBreakpoint(tabId) {
+  const target = { tabId };
+
+  try {
+    console.log("[setup] start", { tabId });
+
+    if (!attachedTabs.has(tabId)) {
+      console.log("[setup] debugger.attach");
+      await chrome.debugger.attach(target, "1.3");
+      attachedTabs.add(tabId);
+    }
+
+    console.log("[setup] Debugger.enable");
+    await chrome.debugger.sendCommand(target, "Debugger.enable");
+
+    if (!breakpointSetTabs.has(tabId)) {
+      console.log("[setup] setBreakpointByUrl", {
+        urlRegex: TARGET_TS_FILE_REGEX,
+        lineNumber: BREAKPOINT_LINE_0_BASED,
+        columnNumber: 0
+      });
+
+      const result = await chrome.debugger.sendCommand(target, "Debugger.setBreakpointByUrl", {
+        urlRegex: TARGET_TS_FILE_REGEX,
+        lineNumber: BREAKPOINT_LINE_0_BASED,
+        columnNumber: 0
+      });
+
+      console.log("[setup] breakpoint result", result);
+
+      breakpointSetTabs.add(tabId);
+    }
+
+    console.log("[setup] ready", {
+      tabId,
+      targetPage: TARGET_PAGE_URL_PREFIX,
+      targetFile: TARGET_TS_FILE_REGEX,
+      targetLine1Based: TARGET_LINE_1_BASED,
+      breakpointLine0Based: BREAKPOINT_LINE_0_BASED
+    });
+  } catch (e) {
+    console.error("[setup] failed:", e);
+  }
+}
+
+
+
+async function onPaused(source, params) {
+  const tabId = source.tabId;
+  const callFrame = params.callFrames && params.callFrames[0];
+
+  console.log("[paused]", {
+    tabId,
+    reason: params.reason,
+    hitBreakpoints: params.hitBreakpoints,
+    callFrame
+  });
+
+  if (!tabId || !callFrame) {
+    return;
+  }
+
+  const location = callFrame.location;
+
+  if (location.lineNumber !== BREAKPOINT_LINE_0_BASED) {
+    console.log("[paused] not target line, resume", {
+      actualLine0Based: location.lineNumber,
+      targetLine0Based: BREAKPOINT_LINE_0_BASED
+    });
+
+    await resume(source);
+    return;
+  }
+
+  if (thrownTabs.has(tabId)) {
+    console.log("[paused] already thrown, resume");
+    await resume(source);
+    return;
+  }
+
+  thrownTabs.add(tabId);
+
+  try {
+    console.log("[paused] throwing error");
+
+    await chrome.debugger.sendCommand(source, "Debugger.evaluateOnCallFrame", {
+      callFrameId: callFrame.callFrameId,
+      expression: `
+        (() => {
+          throw new Error(${JSON.stringify(ERROR_MESSAGE)});
+        })()
+      `
+    });
+  } catch (e) {
+    console.error("[paused] throw failed:", e);
+  }
+}
+
+
+
+async function resume(source) {
+  try {
+    await chrome.debugger.sendCommand(source, "Debugger.resume");
+  } catch (e) {
+    console.error("[resume] failed:", e);
+  }
+}

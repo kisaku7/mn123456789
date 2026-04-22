@@ -1,0 +1,144 @@
+{
+  "name": "TS Line After Error Injector",
+  "version": "1.0",
+  "manifest_version": 3,
+  "permissions": [
+    "debugger",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://example.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {}
+}
+
+
+const TARGET_PAGE_URL_PREFIX = "https://example.com/target";
+const TARGET_TS_FILE_REGEX = ".*TicketPage\\.ts$";
+
+// DevTools上で「この行の実行後に例外を出したい」という行番号
+// 例: DevTools上の88行目の実行後に例外を出したい
+const TARGET_AFTER_LINE_1_BASED = 88;
+
+// breakpointは0始まり
+// 「88行目の実行後」にしたいので、基本は89行目に置く
+const BREAKPOINT_LINE_0_BASED = TARGET_AFTER_LINE_1_BASED;
+
+const INJECT_ERROR_MESSAGE = "Injected error after target TypeScript line";
+
+const attachedTabs = new Set();
+const handledPauseKeys = new Set();
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== "complete") {
+    return;
+  }
+
+  if (!tab.url || !tab.url.startsWith(TARGET_PAGE_URL_PREFIX)) {
+    return;
+  }
+
+  attachAndSetBreakpoint(tabId);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  attachedTabs.delete(tabId);
+});
+
+chrome.debugger.onDetach.addListener((source) => {
+  if (source.tabId) {
+    attachedTabs.delete(source.tabId);
+  }
+});
+
+chrome.debugger.onEvent.addListener(async (source, method, params) => {
+  if (method !== "Debugger.paused") {
+    return;
+  }
+
+  await handlePaused(source, params);
+});
+
+async function attachAndSetBreakpoint(tabId) {
+  const target = { tabId };
+
+  try {
+    if (!attachedTabs.has(tabId)) {
+      await chrome.debugger.attach(target, "1.3");
+      attachedTabs.add(tabId);
+    }
+
+    await chrome.debugger.sendCommand(target, "Debugger.enable");
+
+    await chrome.debugger.sendCommand(
+      target,
+      "Debugger.setBreakpointByUrl",
+      {
+        urlRegex: TARGET_TS_FILE_REGEX,
+        lineNumber: BREAKPOINT_LINE_0_BASED,
+        columnNumber: 0
+      }
+    );
+
+    console.log("[TS Error Injector] breakpoint set", {
+      tabId,
+      targetFile: TARGET_TS_FILE_REGEX,
+      afterLine1Based: TARGET_AFTER_LINE_1_BASED,
+      breakpointLine0Based: BREAKPOINT_LINE_0_BASED
+    });
+  } catch (e) {
+    console.error("[TS Error Injector] attach/set breakpoint failed:", e);
+  }
+}
+
+async function handlePaused(source, params) {
+  const tabId = source.tabId;
+  const callFrame = params.callFrames?.[0];
+
+  if (!tabId || !callFrame) {
+    return;
+  }
+
+  const location = callFrame.location;
+  const pauseKey = [
+    tabId,
+    location.scriptId,
+    location.lineNumber,
+    location.columnNumber
+  ].join(":");
+
+  if (handledPauseKeys.has(pauseKey)) {
+    await safeResume(source);
+    return;
+  }
+
+  handledPauseKeys.add(pauseKey);
+
+  try {
+    await chrome.debugger.sendCommand(
+      source,
+      "Debugger.evaluateOnCallFrame",
+      {
+        callFrameId: callFrame.callFrameId,
+        expression: `
+          (() => {
+            throw new Error(${JSON.stringify(INJECT_ERROR_MESSAGE)});
+          })()
+        `
+      }
+    );
+  } catch (e) {
+    console.error("[TS Error Injector] throw evaluation failed:", e);
+  }
+}
+
+async function safeResume(source) {
+  try {
+    await chrome.debugger.sendCommand(source, "Debugger.resume");
+  } catch (e) {
+    console.error("[TS Error Injector] resume failed:", e);
+  }
+}

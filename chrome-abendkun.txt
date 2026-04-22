@@ -1,5 +1,5 @@
 {
-  "name": "TS Line Error Injector",
+  "name": "JS Line Throw Injector",
   "version": "1.0",
   "manifest_version": 3,
   "permissions": [
@@ -15,26 +15,34 @@
   "action": {}
 }
 
+
+
+
+
 const TARGET_PAGE_URL_PREFIX = "https://example.com/target";
 
-// DevTools の Sources で見えている TS ファイル名に合わせる
-const TARGET_TS_FILE_REGEX = ".*TicketPage\\.ts$";
+// scriptParsed に出ている JS ファイル名に合わせる
+// 例: https://example.com/assets/app.abc123.js
+const TARGET_SCRIPT_REGEX = /app\..*\.js$/;
 
-// この行を実行せずに例外で落としたい
-// DevTools 表示上の行番号をそのまま書く
+// この行を実行せず、直前で throw する
+// DevTools で見えている JS 側の行番号
 const TARGET_LINE_1_BASED = 88;
-
-// CDP の lineNumber は 0 始まり
-// DevTools上の88行目 = CDPでは87
-const BREAKPOINT_LINE_0_BASED = TARGET_LINE_1_BASED - 1;
 
 const ERROR_MESSAGE = "Injected error before target line";
 
 const attachedTabs = new Set();
-const breakpointSetTabs = new Set();
-const thrownTabs = new Set();
+const patchedScripts = new Set();
+
+
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  console.log("[onUpdated]", {
+    tabId,
+    status: changeInfo.status,
+    url: tab.url
+  });
+
   if (changeInfo.status !== "complete") {
     return;
   }
@@ -43,14 +51,22 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     return;
   }
 
-  attachAndSetErrorBreakpoint(tabId);
+  attachDebugger(tabId);
 });
+
+
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   attachedTabs.delete(tabId);
-  breakpointSetTabs.delete(tabId);
-  thrownTabs.delete(tabId);
+
+  for (const key of [...patchedScripts]) {
+    if (key.startsWith(`${tabId}:`)) {
+      patchedScripts.delete(key);
+    }
+  }
 });
+
+
 
 chrome.debugger.onDetach.addListener((source) => {
   if (!source.tabId) {
@@ -58,91 +74,131 @@ chrome.debugger.onDetach.addListener((source) => {
   }
 
   attachedTabs.delete(source.tabId);
-  breakpointSetTabs.delete(source.tabId);
-  thrownTabs.delete(source.tabId);
+
+  for (const key of [...patchedScripts]) {
+    if (key.startsWith(`${source.tabId}:`)) {
+      patchedScripts.delete(key);
+    }
+  }
 });
 
+
+
 chrome.debugger.onEvent.addListener(async (source, method, params) => {
-  if (method !== "Debugger.paused") {
+  if (method !== "Debugger.scriptParsed") {
     return;
   }
 
-  await onPaused(source, params);
+  await onScriptParsed(source, params);
 });
 
-async function attachAndSetErrorBreakpoint(tabId) {
+
+
+async function attachDebugger(tabId) {
   const target = { tabId };
 
   try {
     if (!attachedTabs.has(tabId)) {
       await chrome.debugger.attach(target, "1.3");
       attachedTabs.add(tabId);
+      console.log("[attach] OK", tabId);
     }
 
     await chrome.debugger.sendCommand(target, "Debugger.enable");
+    console.log("[Debugger.enable] OK", tabId);
+  } catch (e) {
+    console.error("[attachDebugger] failed", e);
+  }
+}
 
-    if (!breakpointSetTabs.has(tabId)) {
-      await chrome.debugger.sendCommand(target, "Debugger.setBreakpointByUrl", {
-        urlRegex: TARGET_TS_FILE_REGEX,
-        lineNumber: BREAKPOINT_LINE_0_BASED,
-        columnNumber: 0
-      });
 
-      breakpointSetTabs.add(tabId);
+
+async function onScriptParsed(source, params) {
+  const tabId = source.tabId;
+
+  if (!tabId) {
+    return;
+  }
+
+  const scriptUrl = params.url || "";
+
+  console.log("[scriptParsed]", scriptUrl);
+
+  if (!TARGET_SCRIPT_REGEX.test(scriptUrl)) {
+    return;
+  }
+
+  const patchKey = `${tabId}:${params.scriptId}`;
+
+  if (patchedScripts.has(patchKey)) {
+    return;
+  }
+
+  patchedScripts.add(patchKey);
+
+  console.log("[target script found]", {
+    tabId,
+    scriptId: params.scriptId,
+    url: scriptUrl
+  });
+
+  await patchScriptSource(source, params.scriptId, scriptUrl);
+}
+
+
+
+async function patchScriptSource(source, scriptId, scriptUrl) {
+  try {
+    const result = await chrome.debugger.sendCommand(source, "Debugger.getScriptSource", {
+      scriptId
+    });
+
+    const originalSource = result.scriptSource;
+
+    if (!originalSource) {
+      console.warn("[patch] script source is empty", scriptUrl);
+      return;
     }
 
-    console.log("[TS Line Error Injector] ready", {
-      tabId,
-      targetPage: TARGET_PAGE_URL_PREFIX,
-      targetFile: TARGET_TS_FILE_REGEX,
-      targetLine1Based: TARGET_LINE_1_BASED,
-      breakpointLine0Based: BREAKPOINT_LINE_0_BASED
+    const lines = originalSource.split("\n");
+
+    const insertIndex = TARGET_LINE_1_BASED - 1;
+
+    if (insertIndex < 0 || insertIndex >= lines.length) {
+      console.warn("[patch] target line out of range", {
+        targetLine: TARGET_LINE_1_BASED,
+        totalLines: lines.length,
+        scriptUrl
+      });
+      return;
+    }
+
+    const throwCode = `throw new Error(${JSON.stringify(ERROR_MESSAGE)});`;
+
+    lines.splice(insertIndex, 0, throwCode);
+
+    const patchedSource = lines.join("\n");
+
+    console.log("[patch] trying setScriptSource", {
+      scriptUrl,
+      scriptId,
+      targetLine: TARGET_LINE_1_BASED,
+      insertIndex,
+      beforeLine: lines[insertIndex + 1],
+      throwCode
     });
-  } catch (e) {
-    console.error("[TS Line Error Injector] setup failed:", e);
-  }
-}
 
-async function onPaused(source, params) {
-  const tabId = source.tabId;
-  const callFrame = params.callFrames && params.callFrames[0];
-
-  if (!tabId || !callFrame) {
-    return;
-  }
-
-  const location = callFrame.location;
-
-  if (location.lineNumber !== BREAKPOINT_LINE_0_BASED) {
-    await resume(source);
-    return;
-  }
-
-  if (thrownTabs.has(tabId)) {
-    await resume(source);
-    return;
-  }
-
-  thrownTabs.add(tabId);
-
-  try {
-    await chrome.debugger.sendCommand(source, "Debugger.evaluateOnCallFrame", {
-      callFrameId: callFrame.callFrameId,
-      expression: `
-        (() => {
-          throw new Error(${JSON.stringify(ERROR_MESSAGE)});
-        })()
-      `
+    const setResult = await chrome.debugger.sendCommand(source, "Debugger.setScriptSource", {
+      scriptId,
+      scriptSource: patchedSource
     });
-  } catch (e) {
-    console.error("[TS Line Error Injector] throw failed:", e);
-  }
-}
 
-async function resume(source) {
-  try {
-    await chrome.debugger.sendCommand(source, "Debugger.resume");
+    console.log("[patch] setScriptSource result", setResult);
   } catch (e) {
-    console.error("[TS Line Error Injector] resume failed:", e);
+    console.error("[patch] failed", {
+      scriptUrl,
+      scriptId,
+      error: e
+    });
   }
 }

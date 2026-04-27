@@ -1,0 +1,186 @@
+{
+  "name": "JS Throw Injector",
+  "version": "1.0",
+  "manifest_version": 3,
+  "permissions": [
+    "debugger",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {}
+}
+
+
+const TARGET_PAGE_PREFIX = "https://example.com/";
+const TARGET_SCRIPT_REGEX = /target-script.*\.js$/;
+const TARGET_LINE_1_BASED = 88;
+const THROW_MESSAGE = "Injected error";
+
+const attachedTabs = new Set();
+const enabledTabs = new Set();
+
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab.id || !tab.url) {
+    return;
+  }
+
+  if (!tab.url.startsWith(TARGET_PAGE_PREFIX)) {
+    console.log("target page mismatch", tab.url);
+    return;
+  }
+
+  await setup(tab.id);
+  await chrome.tabs.reload(tab.id);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  attachedTabs.delete(tabId);
+  enabledTabs.delete(tabId);
+});
+
+chrome.debugger.onDetach.addListener((source) => {
+  if (!source.tabId) {
+    return;
+  }
+
+  attachedTabs.delete(source.tabId);
+  enabledTabs.delete(source.tabId);
+});
+
+chrome.debugger.onEvent.addListener(async (source, method, params) => {
+  if (method !== "Fetch.requestPaused") {
+    return;
+  }
+
+  await handlePaused(source, params);
+});
+
+async function setup(tabId) {
+  const target = { tabId };
+
+  if (!attachedTabs.has(tabId)) {
+    try {
+      await chrome.debugger.attach(target, "1.3");
+      attachedTabs.add(tabId);
+    } catch (e) {
+      console.error("attach failed", e);
+      return;
+    }
+  }
+
+  if (!enabledTabs.has(tabId)) {
+    try {
+      await chrome.debugger.sendCommand(target, "Fetch.enable", {
+        patterns: [
+          {
+            urlPattern: "*",
+            resourceType: "Script",
+            requestStage: "Response"
+          }
+        ]
+      });
+
+      enabledTabs.add(tabId);
+      console.log("Fetch enabled");
+    } catch (e) {
+      console.error("Fetch.enable failed", e);
+    }
+  }
+}
+
+async function handlePaused(source, params) {
+  const url = params.request?.url || "";
+
+  if (!TARGET_SCRIPT_REGEX.test(url)) {
+    await continueRequest(source, params.requestId);
+    return;
+  }
+
+  try {
+    console.log("target script found", url);
+
+    const bodyResult = await chrome.debugger.sendCommand(source, "Fetch.getResponseBody", {
+      requestId: params.requestId
+    });
+
+    const originalText = decodeBody(bodyResult.body, bodyResult.base64Encoded);
+    const patchedText = injectThrowBeforeLine(originalText, TARGET_LINE_1_BASED, THROW_MESSAGE);
+
+    const headers = (params.responseHeaders || []).filter((h) => {
+      const name = h.name.toLowerCase();
+      return name !== "content-length"
+        && name !== "content-encoding"
+        && name !== "transfer-encoding";
+    });
+
+    await chrome.debugger.sendCommand(source, "Fetch.fulfillRequest", {
+      requestId: params.requestId,
+      responseCode: params.responseStatusCode || 200,
+      responseHeaders: headers,
+      body: encodeBase64Utf8(patchedText)
+    });
+
+    console.log("patched", url);
+  } catch (e) {
+    console.error("patch failed", e);
+    await continueRequest(source, params.requestId);
+  }
+}
+
+function injectThrowBeforeLine(sourceText, line1Based, message) {
+  const lines = sourceText.split("\n");
+  const index = line1Based - 1;
+
+  if (index < 0 || index >= lines.length) {
+    console.warn("target line out of range", {
+      target: line1Based,
+      total: lines.length
+    });
+    return sourceText;
+  }
+
+  lines.splice(index, 0, `throw new Error(${JSON.stringify(message)});`);
+  return lines.join("\n");
+}
+
+async function continueRequest(source, requestId) {
+  try {
+    await chrome.debugger.sendCommand(source, "Fetch.continueRequest", {
+      requestId
+    });
+  } catch (e) {
+    console.error("continueRequest failed", e);
+  }
+}
+
+function decodeBody(body, base64Encoded) {
+  if (!base64Encoded) {
+    return body;
+  }
+
+  const binary = atob(body);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+function encodeBase64Utf8(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+
+  for (const b of bytes) {
+    binary += String.fromCharCode(b);
+  }
+
+  return btoa(binary);
+}
+
